@@ -1,5 +1,5 @@
 # app.py
-# Streamlit app: Mapa -> elegir ubicación -> generar modelo 3D y gráficas + GLB urbano OSM
+# Streamlit app: Mapa -> elegir ubicación -> generar modelo 3D y gráficas
 import numpy as np
 import streamlit as st
 import matplotlib.pyplot as plt
@@ -11,13 +11,8 @@ from io import BytesIO
 from datetime import date
 import pandas as pd
 import requests
-import plotly.graph_objects as go
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
-import trimesh
-
-# Módulo para generar GLB urbano desde OSM
-import buildings3d
 
 # --- Config ---
 st.set_page_config(page_title="Bioclima 3D", layout="wide")
@@ -176,9 +171,6 @@ with st.sidebar:
     usar_openmeteo = st.checkbox("Usar datos reales (Open-Meteo ERA5)", value=True, disabled=BUSY)
     anio = st.number_input("Año histórico", min_value=1979, max_value=2100, value=(date.today().year - 1), disabled=BUSY)
 
-    st.header("Modelo 3D urbano (OSM)")
-    radio = st.slider("Radio de búsqueda (m)", 200, 2000, 600, step=50, disabled=BUSY)
-
     st.header("Parámetros del modelo 3D")
     paso = st.slider("Separación entre torres (paso)", 2, 20, 5, disabled=BUSY)
     escala = st.slider("Escala de altura", 0.05, 0.5, 0.15, disabled=BUSY)
@@ -206,72 +198,6 @@ with col2:
 with col3:
     run = st.button("Diseño Bioclimático", type="primary", use_container_width=True, disabled=BUSY)
     retry = st.button("Reintentar descarga", use_container_width=True, disabled=BUSY)
-    gen_glb = st.button("Modelo 3D urbano (GLB)", use_container_width=True, disabled=BUSY)
-    view_glb = st.button("Ver modelo 3D urbano", use_container_width=True, disabled=BUSY)
-
-
-# Visualización interactiva del GLB con Plotly
-if 'view_glb' in locals() and view_glb:
-    try:
-        glb_path = "osm_buildings.glb"
-        scene_or_mesh = trimesh.load(glb_path, force='scene')
-        # Recopilar todas las geometrías en una sola malla
-        vertices_all = []
-        faces_all_i = []
-        faces_all_j = []
-        faces_all_k = []
-        v_offset = 0
-        if hasattr(scene_or_mesh, 'geometry'):  # Scene
-            geoms = scene_or_mesh.geometry.values()
-        else:
-            geoms = [scene_or_mesh]
-        for g in geoms:
-            m = g
-            if not hasattr(m, 'faces') or m.faces is None or len(m.faces) == 0:
-                continue
-            verts = m.vertices
-            faces = m.faces
-            vertices_all.append(verts)
-            faces_all_i.extend((faces[:,0] + v_offset).tolist())
-            faces_all_j.extend((faces[:,1] + v_offset).tolist())
-            faces_all_k.extend((faces[:,2] + v_offset).tolist())
-            v_offset += len(verts)
-        if len(vertices_all) == 0:
-            st.warning("No se encontraron caras trianguladas para visualizar.")
-        else:
-            import numpy as np
-            V = np.vstack(vertices_all)
-            fig = go.Figure(data=[go.Mesh3d(
-                x=V[:,0], y=V[:,1], z=V[:,2],
-                i=faces_all_i, j=faces_all_j, k=faces_all_k,
-                opacity=1.0, flatshading=True
-            )])
-            fig.update_layout(
-                scene=dict(aspectmode='data'),
-                margin=dict(l=0, r=0, t=30, b=0),
-                title="Modelo urbano OSM (vista interactiva)"
-            )
-            st.plotly_chart(fig, use_container_width=True)
-    except Exception as e:
-        st.error(f"No se pudo visualizar el GLB: {e}")
-
-st.divider()
-
-# Generación del modelo 3D urbano (OSM) a GLB
-if gen_glb:
-    st.session_state["busy"] = True
-    with st.spinner("Descargando edificios OSM y generando modelo 3D (GLB)..."):
-        try:
-            cfg = buildings3d.OSM3DConfig(lat=float(lat), lon=float(lon), radius_m=float(radio))
-            out_file = "osm_buildings.glb"
-            path = buildings3d.build_glb_from_osm(cfg, out_file)
-            with open(path, "rb") as f:
-                st.download_button("Descargar modelo urbano (.glb)", f, file_name=out_file, mime="model/gltf-binary")
-            st.success("Modelo urbano 3D generado ✅")
-        except Exception as e:
-            st.error(f"Error generando modelo urbano: {e}")
-        finally:
-            st.session_state["busy"] = False
 
 st.divider()
 

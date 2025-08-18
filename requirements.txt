@@ -4,5 +4,11 @@ streamlit-folium
 matplotlib
 numpy
 pandas
-
 requests
+osmnx
+geopandas
+shapely
+pyproj
+rtree
+trimesh
+plotly
