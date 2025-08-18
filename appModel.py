@@ -16,7 +16,7 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 import trimesh
 
-# Módulo para generar GLB urbano desde OSM
+# Módulo para generar GLB urbano desde OSM-
 import buildings3d
 
 # --- Config ---

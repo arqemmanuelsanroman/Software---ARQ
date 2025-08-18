@@ -12,3 +12,5 @@ pyproj
 rtree
 trimesh
 plotly
+mapbox-earcut 
+manifold3d
