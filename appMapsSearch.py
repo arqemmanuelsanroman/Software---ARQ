@@ -25,16 +25,10 @@ st.title("Diseño Bioclimático: Mapa → Modelo 3D → Gráficas + GLB urbano")
 
 MESES = ["Ene","Feb","Mar","Abr","May","Jun","Jul","Ago","Sep","Oct","Nov","Dic"]
 
-# Estado persistente
 if "busy" not in st.session_state:
     st.session_state.busy = False
 if "center" not in st.session_state:
     st.session_state.center = [19.4326, -99.1332]  # CDMX por defecto
-if "map_zoom" not in st.session_state:
-    st.session_state.map_zoom = 12
-if "map_type" not in st.session_state:
-    st.session_state.map_type = "OpenStreetMap"
-
 BUSY = st.session_state.busy
 
 # ─────────────────────────────────────────────
@@ -53,8 +47,6 @@ def alturas_conceptuales(tmax, viento, radiacion=None):
     rad = np.zeros_like(tmax) if radiacion is None else radiacion
     h = tmax + 0.5*viento + 0.1*rad
     max_h = np.max(h) if np.any(np.isfinite(h)) else 1.0
-    if max_h == 0:
-        max_h = 1.0
     return (h / max_h) * 100.0
 
 def plot_modelo_3d(alturas, elev=25, azim=210, paso=5.0, escala=0.15, torre_xy=1.0):
@@ -105,7 +97,6 @@ def fetch_open_meteo_monthly(lat, lon, year=None):
     }
     base = "https://archive-api.open-meteo.com/v1/era5"
     resp = requests_retry_session().get(base, params=params, timeout=60)
-    resp.raise_for_status()
     data = resp.json()
     df = pd.DataFrame({
         "date": pd.to_datetime(data["daily"]["time"]),
@@ -114,11 +105,7 @@ def fetch_open_meteo_monthly(lat, lon, year=None):
         "viento": data["daily"]["wind_speed_10m_max"],
         "rad": data["daily"]["shortwave_radiation_sum"]
     }).set_index("date")
-    m = df.resample("MS").agg({
-        "tmax": "mean", "tmin": "mean", "viento": "mean", "rad": "sum"
-    }).iloc[:12]
-    if len(m) < 12:
-        m = m.reindex(pd.date_range(f"{year}-01-01", periods=12, freq="MS")).fillna(method="ffill").fillna(method="bfill")
+    m = df.resample("MS").mean().iloc[:12]
     return m["tmax"].to_numpy(), m["tmin"].to_numpy(), m["viento"].to_numpy(), m["rad"].to_numpy()
 
 # ─────────────────────────────────────────────
@@ -127,89 +114,74 @@ def fetch_open_meteo_monthly(lat, lon, year=None):
 with st.sidebar:
     st.header("Entrada de datos")
     uploaded = st.file_uploader("CSV (tmax,tmin,viento[,radiacion])", type=["csv"], disabled=BUSY)
-    elev = st.slider("Elevación cámara (3D)", 0, 85, 25, disabled=BUSY)
-    azim = st.slider("Azimut cámara (3D)", 0, 360, 210, disabled=BUSY)
-    usar_openmeteo = st.checkbox("Usar datos reales (Open-Meteo ERA5)", True, disabled=BUSY)
-    anio = st.number_input("Año histórico", 1979, 2100, date.today().year - 1, disabled=BUSY)
-    radio = st.slider("Radio de búsqueda OSM (m)", 200, 2000, 600, step=50, disabled=BUSY)
-    paso = st.slider("Separación entre torres", 2, 20, 5, disabled=BUSY)
-    escala = st.slider("Escala de altura", 0.05, 0.5, 0.15, disabled=BUSY)
-    base = st.slider("Tamaño base de la torre", 1, 5, 1, disabled=BUSY)
+    elev = st.slider("Elevación cámara (3D)", 0, 85, 25)
+    azim = st.slider("Azimut cámara (3D)", 0, 360, 210)
+    usar_openmeteo = st.checkbox("Usar datos reales (Open-Meteo ERA5)", True)
+    anio = st.number_input("Año histórico", 1979, 2100, date.today().year - 1)
+    radio = st.slider("Radio de búsqueda OSM (m)", 200, 2000, 600, step=50)
+    paso = st.slider("Separación entre torres", 2, 20, 5)
+    escala = st.slider("Escala de altura", 0.05, 0.5, 0.15)
+    base = st.slider("Tamaño base de la torre", 1, 5, 1)
 
 # ─────────────────────────────────────────────
-# MAPA INTERACTIVO (Folium) con buscador y tipos
+# MAPA INTERACTIVO CON MAPBOX Y OTRAS CAPAS
 # ─────────────────────────────────────────────
 st.subheader("1) Buscar o elegir ubicación")
 
-# Buscador
-query = st.text_input("🔍 Buscar lugar (ej: Puebla, México)")
-buscar = st.button("Buscar")
-if buscar and query.strip():
-    try:
-        url = "https://nominatim.openstreetmap.org/search"
-        params = {"q": query, "format": "json", "limit": 1}
-        resp = requests.get(url, params=params, timeout=10, headers={"User-Agent": "streamlit-app"})
-        if resp.status_code != 200 or "application/json" not in resp.headers.get("Content-Type", ""):
-            raise ValueError("Respuesta inválida del servidor")
-        data = resp.json()
-        if data:
-            lat = float(data[0]["lat"])
-            lon = float(data[0]["lon"])
-            st.session_state.center = [lat, lon]
-            st.session_state.map_zoom = 13
-            st.success(f"Ubicación encontrada: {data[0]['display_name']}")
-        else:
-            st.warning("No se encontró esa ubicación.")
-    except Exception as e:
-        st.warning(f"No se pudo buscar la ubicación: {e}")
+col_map, col_search = st.columns([3, 2])
+with col_search:
+    query = st.text_input("🔍 Buscar lugar (ej: Puebla, México)")
+    buscar = st.button("Buscar")
+    if buscar and query.strip():
+        try:
+            url = "https://nominatim.openstreetmap.org/search"
+            params = {"q": query, "format": "json", "limit": 1}
+            resp = requests.get(url, params=params, timeout=10, headers={"User-Agent": "streamlit-app"})
+            if resp.status_code != 200 or "application/json" not in resp.headers.get("Content-Type", ""):
+                raise ValueError("Respuesta inválida del servidor")
+            data = resp.json()
+            if data:
+                lat = float(data[0]["lat"])
+                lon = float(data[0]["lon"])
+                st.session_state.center = [lat, lon]
+                st.success(f"Ubicación encontrada: {data[0]['display_name']}")
+            else:
+                st.warning("No se encontró esa ubicación.")
+        except Exception as e:
+            st.warning(f"No se pudo buscar la ubicación: {e}")
 
-# Token Mapbox opcional (para estilos Mapbox)
+# Token de Mapbox
 MAPBOX_TOKEN = st.secrets.get("MAPBOX_TOKEN", "") or st.text_input(
-    "🔑 Token de Mapbox (desde account.mapbox.com):", type="password", value=""
+    "🔑 Token de Mapbox (desde account.mapbox.com):", type="password"
 )
 
 map_styles = {
     "OpenStreetMap": None,
-    "Satelital (Esri + labels)": "esri",
+    "Satelital (Esri)": "esri",
     "Terreno (Stamen)": "stamen-terrain",
     "Carto Light": "carto-light",
     "Mapbox Streets": "mapbox/streets-v12",
     "Mapbox Satellite": "mapbox/satellite-v9",
     "Mapbox Outdoors": "mapbox/outdoors-v12",
     "Mapbox Light": "mapbox/light-v11",
-    "Mapbox Dark": "mapbox/dark-v11",
+    "Mapbox Dark": "mapbox/dark-v11"
 }
-# Selector con persistencia
-tipo_mapa = st.selectbox(
-    "Tipo de mapa",
-    list(map_styles.keys()),
-    index=list(map_styles.keys()).index(st.session_state.map_type),
-)
-st.session_state.map_type = tipo_mapa
 
-# Construcción del mapa
+tipo_mapa = st.selectbox("Tipo de mapa", list(map_styles.keys()))
+
 center = st.session_state.center
-m = folium.Map(location=center, zoom_start=st.session_state.map_zoom, control_scale=True)
+m = folium.Map(location=center, zoom_start=12, control_scale=True)
 style = map_styles[tipo_mapa]
 
 if tipo_mapa == "OpenStreetMap":
     folium.TileLayer("OpenStreetMap", attr="© OpenStreetMap contributors").add_to(m)
 
-elif tipo_mapa == "Satelital (Esri + labels)":
-    # Base satelital
+elif tipo_mapa == "Satelital (Esri)":
     folium.TileLayer(
         tiles="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
         name="Esri Satellite",
-        attr="Tiles © Esri — Sources: Esri, Earthstar Geographics, CNES/Airbus DS, USGS",
+        attr="Tiles © Esri — Earthstar Geographics, CNES/Airbus DS, USGS",
         overlay=False
-    ).add_to(m)
-    # Labels
-    folium.TileLayer(
-        tiles="https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}",
-        name="Labels",
-        attr="Labels © Esri — Boundaries and Places",
-        overlay=True,
-        control=False
     ).add_to(m)
 
 elif tipo_mapa == "Terreno (Stamen)":
@@ -222,45 +194,37 @@ elif tipo_mapa == "Carto Light":
     folium.TileLayer(
         tiles="https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png",
         name="Carto Light",
-        attr="© OpenStreetMap contributors, © CARTO"
+        attr="© OpenStreetMap contributors, © CARTO",
+        overlay=False
     ).add_to(m)
 
 elif style and style.startswith("mapbox"):
     if not MAPBOX_TOKEN:
         st.warning("⚠️ Ingresa tu token de Mapbox para usar estos estilos.")
-        folium.TileLayer("OpenStreetMap", attr="© OpenStreetMap contributors").add_to(m)
     else:
         folium.TileLayer(
             tiles=f"https://api.mapbox.com/styles/v1/{style}/tiles/256/{{z}}/{{x}}/{{y}}@2x?access_token={MAPBOX_TOKEN}",
             attr='© <a href="https://www.mapbox.com/about/maps/">Mapbox</a> © OpenStreetMap contributors',
             name=tipo_mapa,
+            overlay=False
         ).add_to(m)
 
-# Marcador y captura de clicks
-folium.Marker(location=center, tooltip="Ubicación actual", icon=folium.Icon(color="red")).add_to(m)
 folium.LatLngPopup().add_to(m)
-
 map_data = st_folium(m, height=500, width=None)
 
-# Guardar cambios de click/zoom
-if map_data:
-    if "last_clicked" in map_data and map_data["last_clicked"]:
-        st.session_state.center = [
-            map_data["last_clicked"]["lat"],
-            map_data["last_clicked"]["lng"]
-        ]
-    if "zoom" in map_data and isinstance(map_data["zoom"], (int, float)):
-        st.session_state.map_zoom = int(map_data["zoom"])
+# Actualizar coordenadas si se hace click
+if map_data and "last_clicked" in map_data and map_data["last_clicked"]:
+    st.session_state.center = [
+        map_data["last_clicked"]["lat"],
+        map_data["last_clicked"]["lng"]
+    ]
 
 lat, lon = st.session_state.center
 
-# ─────────────────────────────────────────────
-# ACCIONES
-# ─────────────────────────────────────────────
 col1, col2, col3 = st.columns(3)
-run = col1.button("Diseño Bioclimático", type="primary", use_container_width=True, disabled=BUSY)
-gen_glb = col2.button("Modelo 3D urbano (GLB)", use_container_width=True, disabled=BUSY)
-view_glb = col3.button("Ver modelo 3D urbano", use_container_width=True, disabled=BUSY)
+run = col1.button("Diseño Bioclimático", type="primary", use_container_width=True)
+gen_glb = col2.button("Modelo 3D urbano (GLB)", use_container_width=True)
+view_glb = col3.button("Ver modelo 3D urbano", use_container_width=True)
 
 st.divider()
 
@@ -270,57 +234,28 @@ st.divider()
 if run:
     with st.spinner("Generando diseño bioclimático..."):
         try:
-            if uploaded is not None:
-                df = pd.read_csv(uploaded)
-                cols = {c.lower(): c for c in df.columns}
-                def get_col(*names):
-                    for n in names:
-                        if n in cols: return df[cols[n]].to_numpy().astype(float)[:12]
-                    return None
-                tmax = get_col("tmax","temp_max","tempmax")
-                tmin = get_col("tmin","temp_min","tempmin")
-                viento = get_col("viento","wind","wind_speed","vel_viento")
-                radiacion = get_col("radiacion","radiation","rad")
-                if tmax is None or tmin is None or viento is None:
-                    st.error("El CSV debe tener al menos tmax, tmin y viento (12 filas).")
-                    st.stop()
-                if radiacion is not None and len(radiacion) < 12:
-                    radiacion = None
+            if usar_openmeteo:
+                tmax, tmin, viento, radiacion = fetch_open_meteo_monthly(lat, lon, int(anio))
             else:
-                if usar_openmeteo:
-                    try:
-                        tmax, tmin, viento, radiacion = fetch_open_meteo_monthly(lat, lon, int(anio))
-                    except Exception as e:
-                        st.warning(f"No se pudo descargar Open-Meteo ({e}). Usando serie dummy.")
-                        tmax, tmin, viento, radiacion = series_dummy(12, lat)
-                else:
-                    tmax, tmin, viento, radiacion = series_dummy(12, lat)
-
+                tmax, tmin, viento, radiacion = series_dummy(12, lat)
             alturas = alturas_conceptuales(tmax, viento, radiacion)
             fig3d = plot_modelo_3d(alturas, elev=elev, azim=azim, paso=paso, escala=escala, torre_xy=base)
             st.pyplot(fig3d)
-
-            # Gráficas
             col_a, col_b = st.columns(2)
             with col_a:
                 st.pyplot(line_chart(tmax, "Temperatura Máxima", "°C"))
                 st.pyplot(line_chart(viento, "Viento", "m/s"))
             with col_b:
-                if radiacion is not None:
-                    st.pyplot(line_chart(radiacion, "Radiación", "W/m²"))
+                st.pyplot(line_chart(radiacion, "Radiación", "W/m²"))
                 st.pyplot(line_chart(alturas, "Alturas Conceptuales", "%"))
-
-            # Descargar PNG del 3D
             buf = BytesIO()
-            fig3d.savefig(buf, format="png", dpi=200, bbox_inches="tight")
+            fig3d.savefig(buf, format="png", dpi=200)
             st.download_button("Descargar 3D como PNG", buf.getvalue(), "bioclima_3d.png", "image/png")
-
-            st.success("Listo ✅")
         except Exception as e:
-            st.error(f"Ocurrió un error: {e}")
+            st.error(f"Error generando diseño: {e}")
 
 # ─────────────────────────────────────────────
-# MODELO URBANO OSM (GLB)
+# MODELO URBANO OSM
 # ─────────────────────────────────────────────
 if gen_glb:
     with st.spinner("Descargando edificios OSM y generando GLB..."):
@@ -329,71 +264,31 @@ if gen_glb:
             path = buildings3d.build_glb_from_osm(cfg, "osm_buildings.glb")
             with open(path, "rb") as f:
                 st.download_button("Descargar modelo urbano (.glb)", f, "osm_buildings.glb", "model/gltf-binary")
-            st.success("Modelo urbano 3D generado ✅")
+            st.success("Modelo urbano generado ✅")
         except Exception as e:
             st.error(f"Error generando modelo urbano: {e}")
 
-# ─────────────────────────────────────────────
-# VISUALIZACIÓN GLB (con colores por vértice)
-# ─────────────────────────────────────────────
 if view_glb:
     try:
         glb_path = "osm_buildings.glb"
         scene_or_mesh = trimesh.load(glb_path, force="scene")
-
-        vertices_all = []
-        i_idx, j_idx, k_idx = [], [], []
-        vertex_colors_all = []
+        vertices_all, i, j, k = [], [], [], []
         offset = 0
-
         geoms = scene_or_mesh.geometry.values() if hasattr(scene_or_mesh, "geometry") else [scene_or_mesh]
-
         for g in geoms:
-            if not hasattr(g, "vertices") or not hasattr(g, "faces"):
-                continue
-            if g.vertices is None or g.faces is None or len(g.faces) == 0:
-                continue
-
-            verts = g.vertices
-            faces = g.faces
-
-            # Colores por vértice (si existen), sino gris 0.6
-            if hasattr(g, "visual") and hasattr(g.visual, "vertex_colors") and g.visual.vertex_colors is not None and g.visual.vertex_colors.size > 0:
-                # g.visual.vertex_colors: (N, 3|4) uint8
-                vcols = g.visual.vertex_colors[:, :3].astype(np.float32) / 255.0
-                if len(vcols) != len(verts):
-                    # Ajuste defensivo: si por alguna razón vienen por cara/material, replicar a número de vértices
-                    vcols = np.tile(np.array([[0.6,0.6,0.6]], dtype=np.float32), (len(verts), 1))
-            else:
-                vcols = np.tile(np.array([[0.6,0.6,0.6]], dtype=np.float32), (len(verts), 1))
-
-            vertices_all.append(verts)
-            vertex_colors_all.append(vcols)
-
-            i_idx += (faces[:, 0] + offset).tolist()
-            j_idx += (faces[:, 1] + offset).tolist()
-            k_idx += (faces[:, 2] + offset).tolist()
-            offset += len(verts)
-
+            if hasattr(g, "vertices") and hasattr(g, "faces") and len(g.faces) > 0:
+                verts = g.vertices; faces = g.faces
+                vertices_all.append(verts)
+                i += (faces[:,0]+offset).tolist()
+                j += (faces[:,1]+offset).tolist()
+                k += (faces[:,2]+offset).tolist()
+                offset += len(verts)
         if not vertices_all:
             st.warning("No se encontraron caras trianguladas.")
         else:
             V = np.vstack(vertices_all)
-            VC = np.vstack(vertex_colors_all)  # (num_vertices, 3) en 0..1
-
-            fig = go.Figure(data=[go.Mesh3d(
-                x=V[:, 0], y=V[:, 1], z=V[:, 2],
-                i=i_idx, j=j_idx, k=k_idx,
-                vertexcolor=VC,          # <<< colores por vértice
-                flatshading=True,
-                lighting=dict(ambient=0.5, diffuse=0.7, specular=0.2),
-                opacity=1.0
-            )])
-            fig.update_layout(
-                scene=dict(aspectmode="data"),
-                margin=dict(l=0, r=0, t=30, b=0),
-                title="Modelo urbano OSM (colores del GLB)"
-            )
+            fig = go.Figure(data=[go.Mesh3d(x=V[:,0], y=V[:,1], z=V[:,2], i=i, j=j, k=k, opacity=1)])
+            fig.update_layout(scene=dict(aspectmode="data"), margin=dict(l=0, r=0, t=30, b=0))
             st.plotly_chart(fig, use_container_width=True)
     except Exception as e:
-        st.error(f"No se pudo visualizar el GLB: {e}")
+        st.error(f"No se pudo visualizar GLB: {e}")

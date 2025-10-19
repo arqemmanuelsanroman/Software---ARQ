@@ -1,0 +1,24 @@
+# Ignorar entornos virtuales
+.venv/
+venv/
+env/
+ENV/
+
+# Ignorar cachés de Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Ignorar cachés o builds
+cache/
+.cache/
+build/
+dist/
+
+# Ignorar archivos de Jupyter/Streamlit temporales
+.ipynb_checkpoints/
+.streamlit/
+
+# Ignorar otros
+.DS_Store
+*.log
